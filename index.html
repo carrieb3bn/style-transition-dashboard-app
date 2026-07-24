@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Style Transition Dashboard</title>
+<title>Three Bird Nest — Style Transition Dashboard</title>
 <style>
   :root {
     --ink: #23201d;
@@ -87,7 +87,7 @@
   <div class="wrap">
     <div class="header">
       <div>
-        <h1>Style Transition Dashboard</h1>
+        <h1>Three Bird Nest — Style Transition Dashboard</h1>
         <p id="subhead">Vendor vs. manufacturing sales by style, paired on shared <code>style:</code> tags.</p>
       </div>
       <div class="controls">
@@ -135,7 +135,7 @@
       return div.innerHTML;
     }
 
-    function renderSide(label, entry, sales, sessionsInfo) {
+    function renderSide(label, entry, sales, sessionsInfo, returnsInfo) {
       if (!entry) {
         return (
           '<div class="side">' +
@@ -147,6 +147,8 @@
 
       const s = sales || { units: 0, revenue: 0, aov: 0 };
       const st = sellThrough(s.units, entry.totalInventory);
+      const returnedUnits = (returnsInfo && returnsInfo[entry.id] && returnsInfo[entry.id].returnedUnits) || 0;
+      const returnRate = s.units > 0 ? returnedUnits / s.units : 0;
       const imageHtml = entry.image
         ? '<img src="' + escapeHtml(entry.image) + '" alt="" class="thumb" />'
         : '<div class="thumb thumbEmpty">No image</div>';
@@ -188,6 +190,8 @@
             '<div class="metric"><div class="label">AOV</div><div class="value">' + money(s.aov) + '</div></div>' +
             '<div class="metric"><div class="label">Inventory left</div><div class="value">' + entry.totalInventory + '</div></div>' +
             '<div class="metric"><div class="label">Sell-through</div><div class="value">' + pct(st) + '</div></div>' +
+            '<div class="metric"><div class="label">Returned units</div><div class="value">' + returnedUnits + '</div></div>' +
+            '<div class="metric"><div class="label">Return rate</div><div class="value">' + pct(returnRate) + '</div></div>' +
             sessionsBlock +
           '</div>' +
         '</div>'
@@ -223,6 +227,7 @@
         let sales = {};
         let meta = null;
         let sessionsResult = null;
+        let returns = {};
 
         if (productIds.length > 0) {
           const salesRes = await fetch("/api/sales", {
@@ -234,6 +239,14 @@
           if (!salesRes.ok) throw new Error(salesJson.error || "Failed to load sales");
           sales = salesJson.sales;
           meta = { ordersScanned: salesJson.ordersScanned, partial: salesJson.partial };
+
+          const returnsRes = await fetch("/api/returns", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ productIds, startDate, endDate }),
+          });
+          const returnsJson = await returnsRes.json();
+          if (returnsRes.ok) returns = returnsJson.returns;
 
           const handles = [];
           for (const p of pairs) {
@@ -292,8 +305,8 @@
                   '<span class="styleKey">style:' + escapeHtml(p.styleKey) + '</span>' +
                 '</div>' +
                 '<div class="pairBody">' +
-                  renderSide("Vendor", p.vendor, p.vendor && sales[p.vendor.id], sessionsResult) +
-                  renderSide("Manufacturing", p.manufacturing, p.manufacturing && sales[p.manufacturing.id], sessionsResult) +
+                  renderSide("Vendor", p.vendor, p.vendor && sales[p.vendor.id], sessionsResult, returns) +
+                  renderSide("Manufacturing", p.manufacturing, p.manufacturing && sales[p.manufacturing.id], sessionsResult, returns) +
                 '</div>' +
               '</div>'
             );
