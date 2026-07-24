@@ -1,5 +1,16 @@
 const { shopifyGraphQL, extractPrefixedTag } = require("../lib/shopify");
 
+const SHOP_QUERY = `
+  query ShopDomain {
+    shop {
+      primaryDomain {
+        url
+      }
+      myshopifyDomain
+    }
+  }
+`;
+
 const PRODUCTS_QUERY = `
   query TransitionProducts($cursor: String) {
     products(
@@ -19,14 +30,28 @@ const PRODUCTS_QUERY = `
           status
           totalInventory
           tags
-          featuredImage {
-            url
+          media(first: 1) {
+            edges {
+              node {
+                ... on MediaImage {
+                  image {
+                    url
+                  }
+                }
+              }
+            }
           }
         }
       }
     }
   }
 `;
+
+function numericIdFromGid(gid) {
+  // "gid://shopify/Product/1234567890" -> "1234567890"
+  const parts = gid.split("/");
+  return parts[parts.length - 1];
+}
 
 async function fetchAllTransitionProducts() {
   let cursor = null;
@@ -55,7 +80,13 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const products = await fetchAllTransitionProducts();
+    const [shopData, products] = await Promise.all([
+      shopifyGraphQL(SHOP_QUERY),
+      fetchAllTransitionProducts(),
+    ]);
+
+    const storeUrl = shopData.shop.primaryDomain.url; // e.g. https://threebirdnest.com
+    const adminHandle = shopData.shop.myshopifyDomain.replace(".myshopify.com", ""); // e.g. three-bird-nest
 
     // Group by the value of the "style:" tag
     const groups = {};
@@ -77,13 +108,19 @@ module.exports = async function handler(req, res) {
         groups[styleKey] = { styleKey, vendor: null, manufacturing: null, extras: [] };
       }
 
+      const firstMediaEdge = product.media.edges[0];
+      const image = firstMediaEdge && firstMediaEdge.node.image ? firstMediaEdge.node.image.url : null;
+
       const entry = {
         id: product.id,
+        numericId: numericIdFromGid(product.id),
         title: product.title,
         handle: product.handle,
         status: product.status,
         totalInventory: product.totalInventory,
-        image: product.featuredImage ? product.featuredImage.url : null,
+        image,
+        url: `${storeUrl}/products/${product.handle}`,
+        adminUrl: `https://admin.shopify.com/store/${adminHandle}/products/${numericIdFromGid(product.id)}`,
       };
 
       if (source === "vendor" && !groups[styleKey].vendor) {
