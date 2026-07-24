@@ -29,6 +29,7 @@ const PRODUCTS_QUERY = `
           handle
           status
           totalInventory
+          createdAt
           tags
           media(first: 1) {
             edges {
@@ -118,6 +119,7 @@ module.exports = async function handler(req, res) {
         handle: product.handle,
         status: product.status,
         totalInventory: product.totalInventory,
+        createdAt: product.createdAt,
         image,
         url: `${storeUrl}/products/${product.handle}`,
         adminUrl: `https://admin.shopify.com/store/${adminHandle}/products/${numericIdFromGid(product.id)}`,
