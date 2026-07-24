@@ -71,8 +71,16 @@
     background: var(--line); color: var(--ink); text-transform: uppercase;
   }
   .error { background: #fbe9e5; border: 1px solid var(--danger); color: var(--danger); padding: 12px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
+  .pendingNote { background: #fdf3e3; border: 1px solid #d9a441; color: #7a5a13; padding: 10px 12px; border-radius: 8px; font-size: 12px; margin-top: 8px; }
   .loading { color: var(--muted); font-size: 13px; }
   .empty { color: var(--muted); font-size: 13px; padding: 40px 0; text-align: center; }
+  .sideTop { display: flex; gap: 12px; margin-bottom: 12px; }
+  .thumb { width: 56px; height: 56px; border-radius: 6px; object-fit: cover; flex-shrink: 0; border: 1px solid var(--line); background: #fff; }
+  .thumbEmpty { display: flex; align-items: center; justify-content: center; font-size: 9px; color: var(--muted); text-align: center; }
+  .idLine { font-size: 11px; color: var(--muted); margin: 0; }
+  .idLine a { color: inherit; text-decoration: underline; }
+  .metric.wide { grid-column: span 2; }
+  .pending { font-size: 11px; color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -127,7 +135,7 @@
       return div.innerHTML;
     }
 
-    function renderSide(label, entry, sales) {
+    function renderSide(label, entry, sales, sessionsInfo) {
       if (!entry) {
         return (
           '<div class="side">' +
@@ -139,19 +147,48 @@
 
       const s = sales || { units: 0, revenue: 0, aov: 0 };
       const st = sellThrough(s.units, entry.totalInventory);
+      const imageHtml = entry.image
+        ? '<img src="' + escapeHtml(entry.image) + '" alt="" class="thumb" />'
+        : '<div class="thumb thumbEmpty">No image</div>';
+
+      let sessionsBlock;
+      if (!sessionsInfo) {
+        sessionsBlock =
+          '<div class="metric"><div class="label">Sessions</div><div class="value">—</div></div>' +
+          '<div class="metric"><div class="label">Conv. rate</div><div class="value">—</div></div>';
+      } else if (!sessionsInfo.available) {
+        sessionsBlock =
+          '<div class="metric wide"><div class="label">Sessions / Conv. rate</div>' +
+          '<div class="pending">Pending Shopify approval (read_reports + protected data)</div></div>';
+      } else {
+        const info = sessionsInfo.sessions[entry.handle];
+        sessionsBlock =
+          '<div class="metric"><div class="label">Sessions</div><div class="value">' + (info ? info.sessions : 0) + '</div></div>' +
+          '<div class="metric"><div class="label">Conv. rate</div><div class="value">' + (info ? pct(info.conversionRate) : "0%") + '</div></div>';
+      }
 
       return (
         '<div class="side ' + label.toLowerCase() + '">' +
-          '<span class="tag">' + label + '</span>' +
-          '<p class="title">' + escapeHtml(entry.title) +
-            '<span class="statusPill">' + escapeHtml(entry.status) + '</span>' +
-          '</p>' +
+          '<div class="sideTop">' +
+            imageHtml +
+            '<div>' +
+              '<span class="tag">' + label + '</span>' +
+              '<p class="title">' + escapeHtml(entry.title) +
+                '<span class="statusPill">' + escapeHtml(entry.status) + '</span>' +
+              '</p>' +
+              '<p class="idLine">ID ' + escapeHtml(entry.numericId) +
+                ' &middot; <a href="' + escapeHtml(entry.url) + '" target="_blank" rel="noopener">View</a>' +
+                ' &middot; <a href="' + escapeHtml(entry.adminUrl) + '" target="_blank" rel="noopener">Edit</a>' +
+              '</p>' +
+            '</div>' +
+          '</div>' +
           '<div class="metrics">' +
             '<div class="metric"><div class="label">Units sold</div><div class="value">' + s.units + '</div></div>' +
             '<div class="metric"><div class="label">Revenue</div><div class="value">' + money(s.revenue) + '</div></div>' +
             '<div class="metric"><div class="label">AOV</div><div class="value">' + money(s.aov) + '</div></div>' +
             '<div class="metric"><div class="label">Inventory left</div><div class="value">' + entry.totalInventory + '</div></div>' +
             '<div class="metric"><div class="label">Sell-through</div><div class="value">' + pct(st) + '</div></div>' +
+            sessionsBlock +
           '</div>' +
         '</div>'
       );
@@ -185,6 +222,7 @@
 
         let sales = {};
         let meta = null;
+        let sessionsResult = null;
 
         if (productIds.length > 0) {
           const salesRes = await fetch("/api/sales", {
@@ -196,6 +234,19 @@
           if (!salesRes.ok) throw new Error(salesJson.error || "Failed to load sales");
           sales = salesJson.sales;
           meta = { ordersScanned: salesJson.ordersScanned, partial: salesJson.partial };
+
+          const handles = [];
+          for (const p of pairs) {
+            if (p.vendor) handles.push(p.vendor.handle);
+            if (p.manufacturing) handles.push(p.manufacturing.handle);
+          }
+
+          const sessionsRes = await fetch("/api/sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ handles, startDate, endDate }),
+          });
+          sessionsResult = await sessionsRes.json();
         }
 
         // Totals
@@ -222,6 +273,13 @@
             meta.ordersScanned + ' orders scanned' + (meta.partial ? ' (partial — narrow the date range)' : '');
         }
 
+        if (sessionsResult && !sessionsResult.available) {
+          const note = document.createElement("div");
+          note.className = "pendingNote";
+          note.textContent = "Sessions/conversion rate not yet available: " + sessionsResult.reason;
+          errorBox.appendChild(note);
+        }
+
         if (pairs.length === 0) {
           pairsContainer.innerHTML = '<div class="empty">No paired products found. Make sure products carry both a shared ' +
             '<code>style:&lt;key&gt;</code> tag and a <code>source:vendor</code> or <code>source:manufacturing</code> tag.</div>';
@@ -234,8 +292,8 @@
                   '<span class="styleKey">style:' + escapeHtml(p.styleKey) + '</span>' +
                 '</div>' +
                 '<div class="pairBody">' +
-                  renderSide("Vendor", p.vendor, p.vendor && sales[p.vendor.id]) +
-                  renderSide("Manufacturing", p.manufacturing, p.manufacturing && sales[p.manufacturing.id]) +
+                  renderSide("Vendor", p.vendor, p.vendor && sales[p.vendor.id], sessionsResult) +
+                  renderSide("Manufacturing", p.manufacturing, p.manufacturing && sales[p.manufacturing.id], sessionsResult) +
                 '</div>' +
               '</div>'
             );
