@@ -22,9 +22,7 @@ const ORDERS_WITH_REFUNDS_QUERY = `
                 node {
                   quantity
                   lineItem {
-                    product {
-                      id
-                    }
+                    sku
                   }
                 }
               }
@@ -68,10 +66,10 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const { productIds, startDate, endDate } = body || {};
+  const { skus, startDate, endDate } = body || {};
 
-  if (!Array.isArray(productIds) || productIds.length === 0) {
-    res.status(400).json({ error: "productIds array is required" });
+  if (!Array.isArray(skus) || skus.length === 0) {
+    res.status(400).json({ error: "skus array is required" });
     return;
   }
   if (!startDate || !endDate) {
@@ -79,15 +77,15 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const idSet = new Set(productIds);
+  const skuSet = new Set(skus);
   const searchQuery = `updated_at:>=${startDate} updated_at:<=${endDate}`;
   const rangeStart = new Date(startDate).getTime();
   // Add a day so endDate is inclusive through 23:59:59
   const rangeEnd = new Date(endDate).getTime() + 24 * 60 * 60 * 1000;
 
   const totals = {};
-  for (const id of productIds) {
-    totals[id] = { returnedUnits: 0 };
+  for (const sku of skus) {
+    totals[sku] = { returnedUnits: 0 };
   }
 
   let cursor = null;
@@ -114,9 +112,9 @@ module.exports = async function handler(req, res) {
           if (refundedAt < rangeStart || refundedAt >= rangeEnd) continue;
 
           for (const { node: rli } of refund.refundLineItems.edges) {
-            const pid = rli.lineItem && rli.lineItem.product && rli.lineItem.product.id;
-            if (!pid || !idSet.has(pid)) continue;
-            totals[pid].returnedUnits += rli.quantity;
+            const sku = rli.lineItem && rli.lineItem.sku;
+            if (!sku || !skuSet.has(sku)) continue;
+            totals[sku].returnedUnits += rli.quantity;
           }
         }
       }
