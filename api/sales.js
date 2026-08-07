@@ -14,13 +14,11 @@ const ORDERS_QUERY = `
             edges {
               node {
                 quantity
+                sku
                 discountedTotalSet {
                   shopMoney {
                     amount
                   }
-                }
-                product {
-                  id
                 }
               }
             }
@@ -65,10 +63,10 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const { productIds, startDate, endDate } = body || {};
+  const { skus, startDate, endDate } = body || {};
 
-  if (!Array.isArray(productIds) || productIds.length === 0) {
-    res.status(400).json({ error: "productIds array is required" });
+  if (!Array.isArray(skus) || skus.length === 0) {
+    res.status(400).json({ error: "skus array is required" });
     return;
   }
   if (!startDate || !endDate) {
@@ -76,12 +74,14 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const idSet = new Set(productIds);
+  const skuSet = new Set(skus);
   const searchQuery = `created_at:>=${startDate} created_at:<=${endDate}`;
 
+  // Per-SKU accumulators. orderIds is an array (not a Set) so it survives
+  // JSON serialization back to the client, which unions them per-product.
   const totals = {};
-  for (const id of productIds) {
-    totals[id] = { units: 0, revenue: 0, orderIds: new Set() };
+  for (const sku of skus) {
+    totals[sku] = { units: 0, revenue: 0, orderIdSet: new Set() };
   }
 
   let cursor = null;
@@ -104,12 +104,12 @@ module.exports = async function handler(req, res) {
       for (const { node: order } of edges) {
         ordersScanned += 1;
         for (const { node: li } of order.lineItems.edges) {
-          const pid = li.product && li.product.id;
-          if (!pid || !idSet.has(pid)) continue;
+          const sku = li.sku;
+          if (!sku || !skuSet.has(sku)) continue;
 
-          totals[pid].units += li.quantity;
-          totals[pid].revenue += parseFloat(li.discountedTotalSet.shopMoney.amount);
-          totals[pid].orderIds.add(order.id);
+          totals[sku].units += li.quantity;
+          totals[sku].revenue += parseFloat(li.discountedTotalSet.shopMoney.amount);
+          totals[sku].orderIdSet.add(order.id);
         }
       }
 
@@ -119,12 +119,14 @@ module.exports = async function handler(req, res) {
     }
 
     const result = {};
-    for (const id of productIds) {
-      const t = totals[id];
-      const orderCount = t.orderIds.size;
-      result[id] = {
+    for (const sku of skus) {
+      const t = totals[sku];
+      const orderIds = Array.from(t.orderIdSet);
+      const orderCount = orderIds.length;
+      result[sku] = {
         units: t.units,
         revenue: Math.round(t.revenue * 100) / 100,
+        orderIds,
         orderCount,
         aov: orderCount > 0 ? Math.round((t.revenue / orderCount) * 100) / 100 : 0,
       };
