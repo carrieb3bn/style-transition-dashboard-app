@@ -96,6 +96,11 @@
   .combineRec a { color: var(--ink); }
   .combineReason { font-size: 12px; color: var(--muted); margin: 0 0 10px; line-height: 1.5; }
   .combineStats { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+  .skuTable { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 11px; }
+  .skuTable th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--line); text-transform: uppercase; letter-spacing: 0.03em; font-size: 10px; }
+  .skuTable td { padding: 4px 6px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+  .skuTable tr:last-child td { border-bottom: none; }
+  .skuOut { color: var(--danger); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -103,7 +108,7 @@
     <div class="header">
       <div>
         <h1>Three Bird Nest — Style Transition Dashboard</h1>
-        <p id="subhead">Vendor vs. manufacturing sales by style, paired on shared <code>style:</code> tags.</p>
+        <p id="subhead">Vendor vs. manufacturing sales by style, paired on shared <code>style:</code> tags, matched by SKU.</p>
       </div>
       <div class="controls">
         <div>
@@ -154,6 +159,33 @@
       return div.innerHTML;
     }
 
+    // Sums per-SKU sales/returns up to the product level. Order counts are
+    // unioned (not summed) across SKUs so AOV reflects distinct orders, not
+    // double-counted ones when a single order contains two sizes.
+    function aggregateProduct(entry, salesBySku, returnsBySku) {
+      let units = 0, revenue = 0, returnedUnits = 0;
+      const orderIdSet = new Set();
+
+      for (const v of entry.variants) {
+        const s = salesBySku[v.sku];
+        if (s) {
+          units += s.units;
+          revenue += s.revenue;
+          for (const oid of s.orderIds) orderIdSet.add(oid);
+        }
+        const r = returnsBySku[v.sku];
+        if (r) returnedUnits += r.returnedUnits;
+      }
+
+      const orderCount = orderIdSet.size;
+      return {
+        units,
+        revenue: Math.round(revenue * 100) / 100,
+        aov: orderCount > 0 ? Math.round((revenue / orderCount) * 100) / 100 : 0,
+        returnedUnits,
+      };
+    }
+
     function isReadyToCombine(pair) {
       return !!(pair.vendor && pair.manufacturing && pair.vendor.totalInventory <= 0);
     }
@@ -163,37 +195,31 @@
     // data (no backlinks, rankings, or organic traffic here). Always
     // sanity-check against Google Search Console before actually
     // redirecting a URL.
-    function buildSeoSuggestion(pair, sales, returns) {
-      const vendorSales = sales[pair.vendor.id] || { units: 0, revenue: 0 };
-      const mfgSales = sales[pair.manufacturing.id] || { units: 0, revenue: 0 };
-      const vendorReturned = (returns[pair.vendor.id] && returns[pair.vendor.id].returnedUnits) || 0;
-      const mfgReturned = (returns[pair.manufacturing.id] && returns[pair.manufacturing.id].returnedUnits) || 0;
-
-      const vendorAge = daysSince(pair.vendor.createdAt);
-      const mfgAge = daysSince(pair.manufacturing.createdAt);
-      const vendorReturnRate = vendorSales.units > 0 ? vendorReturned / vendorSales.units : 0;
-      const mfgReturnRate = mfgSales.units > 0 ? mfgReturned / mfgSales.units : 0;
-
+    function buildSeoSuggestion(vendorAgg, mfgAgg, vendorAge, mfgAge) {
       let recommended, reasoning;
 
       if (vendorAge > mfgAge * 1.5 && vendorAge > 60) {
         recommended = "vendor";
         reasoning = "The vendor page is substantially older (" + vendorAge + " days vs " + mfgAge +
           " days), so it likely carries more accumulated search equity. Suggest keeping the vendor URL live, moving the manufacturing product's content onto it, and redirecting the manufacturing URL into it.";
-      } else if (mfgSales.revenue > vendorSales.revenue * 1.5 && mfgSales.units > 0) {
+      } else if (mfgAgg.revenue > vendorAgg.revenue * 1.5 && mfgAgg.units > 0) {
         recommended = "manufacturing";
-        reasoning = "The manufacturing page is already outperforming on revenue (" + money(mfgSales.revenue) +
-          " vs " + money(vendorSales.revenue) + ") despite being newer. Current demand outweighs the smaller age gap here.";
+        reasoning = "The manufacturing page is already outperforming on revenue (" + money(mfgAgg.revenue) +
+          " vs " + money(vendorAgg.revenue) + ") despite being newer. Current demand outweighs the smaller age gap here.";
       } else {
         recommended = vendorAge >= mfgAge ? "vendor" : "manufacturing";
         reasoning = "Too close to call from age and sales alone \u2014 defaulting to the older URL as the safer SEO default. Confirm with Google Search Console (organic clicks/impressions per URL) before finalizing.";
       }
 
-      return { recommended, reasoning, vendorAge, mfgAge, vendorReturnRate, mfgReturnRate };
+      return { recommended, reasoning };
     }
 
-    function renderCombineSuggestion(pair, sales, returns) {
-      const s = buildSeoSuggestion(pair, sales, returns);
+    function renderCombineSuggestion(pair, vendorAgg, mfgAgg) {
+      const vendorAge = daysSince(pair.vendor.createdAt);
+      const mfgAge = daysSince(pair.manufacturing.createdAt);
+      const vendorReturnRate = vendorAgg.units > 0 ? vendorAgg.returnedUnits / vendorAgg.units : 0;
+      const mfgReturnRate = mfgAgg.units > 0 ? mfgAgg.returnedUnits / mfgAgg.units : 0;
+      const s = buildSeoSuggestion(vendorAgg, mfgAgg, vendorAge, mfgAge);
       const winnerEntry = s.recommended === "vendor" ? pair.vendor : pair.manufacturing;
 
       return (
@@ -203,16 +229,43 @@
             '</strong> \u2014 <a href="' + escapeHtml(winnerEntry.url) + '" target="_blank" rel="noopener">' + escapeHtml(winnerEntry.url) + '</a></p>' +
           '<p class="combineReason">' + escapeHtml(s.reasoning) + '</p>' +
           '<div class="combineStats">' +
-            '<span>Vendor age: ' + s.vendorAge + 'd</span>' +
-            '<span>Manufacturing age: ' + s.mfgAge + 'd</span>' +
-            '<span>Vendor return rate: ' + pct(s.vendorReturnRate) + '</span>' +
-            '<span>Manufacturing return rate: ' + pct(s.mfgReturnRate) + '</span>' +
+            '<span>Vendor age: ' + vendorAge + 'd</span>' +
+            '<span>Manufacturing age: ' + mfgAge + 'd</span>' +
+            '<span>Vendor return rate: ' + pct(vendorReturnRate) + '</span>' +
+            '<span>Manufacturing return rate: ' + pct(mfgReturnRate) + '</span>' +
           '</div>' +
         '</div>'
       );
     }
 
-    function renderSide(label, entry, sales, sessionsInfo, returnsInfo) {
+    function renderSkuTable(entry, salesBySku, returnsBySku) {
+      if (!entry.variants || entry.variants.length === 0) return "";
+
+      const rows = entry.variants.map(function (v) {
+        const s = salesBySku[v.sku] || { units: 0, revenue: 0 };
+        const r = returnsBySku[v.sku] || { returnedUnits: 0 };
+        const invClass = v.inventory <= 0 ? "skuOut" : "";
+        return (
+          '<tr>' +
+            '<td>' + escapeHtml(v.size) + '</td>' +
+            '<td>' + escapeHtml(v.sku) + '</td>' +
+            '<td>' + s.units + '</td>' +
+            '<td>' + money(s.revenue) + '</td>' +
+            '<td>' + r.returnedUnits + '</td>' +
+            '<td class="' + invClass + '">' + v.inventory + '</td>' +
+          '</tr>'
+        );
+      }).join("");
+
+      return (
+        '<table class="skuTable">' +
+          '<thead><tr><th>Size</th><th>SKU</th><th>Units</th><th>Revenue</th><th>Returned</th><th>Inv.</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>'
+      );
+    }
+
+    function renderSide(label, entry, agg, sessionsInfo, salesBySku, returnsBySku) {
       if (!entry) {
         return (
           '<div class="side">' +
@@ -222,10 +275,9 @@
         );
       }
 
-      const s = sales || { units: 0, revenue: 0, aov: 0 };
-      const st = sellThrough(s.units, entry.totalInventory);
-      const returnedUnits = (returnsInfo && returnsInfo[entry.id] && returnsInfo[entry.id].returnedUnits) || 0;
-      const returnRate = s.units > 0 ? returnedUnits / s.units : 0;
+      const a = agg || { units: 0, revenue: 0, aov: 0, returnedUnits: 0 };
+      const st = sellThrough(a.units, entry.totalInventory);
+      const returnRate = a.units > 0 ? a.returnedUnits / a.units : 0;
       const imageHtml = entry.image
         ? '<img src="' + escapeHtml(entry.image) + '" alt="" class="thumb" />'
         : '<div class="thumb thumbEmpty">No image</div>';
@@ -262,15 +314,16 @@
             '</div>' +
           '</div>' +
           '<div class="metrics">' +
-            '<div class="metric"><div class="label">Units sold</div><div class="value">' + s.units + '</div></div>' +
-            '<div class="metric"><div class="label">Revenue</div><div class="value">' + money(s.revenue) + '</div></div>' +
-            '<div class="metric"><div class="label">AOV</div><div class="value">' + money(s.aov) + '</div></div>' +
+            '<div class="metric"><div class="label">Units sold</div><div class="value">' + a.units + '</div></div>' +
+            '<div class="metric"><div class="label">Revenue</div><div class="value">' + money(a.revenue) + '</div></div>' +
+            '<div class="metric"><div class="label">AOV</div><div class="value">' + money(a.aov) + '</div></div>' +
             '<div class="metric"><div class="label">Inventory left</div><div class="value">' + entry.totalInventory + '</div></div>' +
             '<div class="metric"><div class="label">Sell-through</div><div class="value">' + pct(st) + '</div></div>' +
-            '<div class="metric"><div class="label">Returned units</div><div class="value">' + returnedUnits + '</div></div>' +
+            '<div class="metric"><div class="label">Returned units</div><div class="value">' + a.returnedUnits + '</div></div>' +
             '<div class="metric"><div class="label">Return rate</div><div class="value">' + pct(returnRate) + '</div></div>' +
             sessionsBlock +
           '</div>' +
+          renderSkuTable(entry, salesBySku, returnsBySku) +
         '</div>'
       );
     }
@@ -295,35 +348,37 @@
         if (!pairsRes.ok) throw new Error(pairsJson.error || "Failed to load products");
 
         const pairs = pairsJson.pairs;
-        const productIds = [];
+
+        // Collect every SKU across every tracked product
+        const allSkus = [];
         for (const p of pairs) {
-          if (p.vendor) productIds.push(p.vendor.id);
-          if (p.manufacturing) productIds.push(p.manufacturing.id);
+          if (p.vendor) for (const v of p.vendor.variants) allSkus.push(v.sku);
+          if (p.manufacturing) for (const v of p.manufacturing.variants) allSkus.push(v.sku);
         }
 
-        let sales = {};
+        let salesBySku = {};
+        let returnsBySku = {};
         let meta = null;
         let sessionsResult = null;
-        let returns = {};
 
-        if (productIds.length > 0) {
+        if (allSkus.length > 0) {
           const salesRes = await fetch("/api/sales", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ productIds, startDate, endDate }),
+            body: JSON.stringify({ skus: allSkus, startDate, endDate }),
           });
           const salesJson = await salesRes.json();
           if (!salesRes.ok) throw new Error(salesJson.error || "Failed to load sales");
-          sales = salesJson.sales;
+          salesBySku = salesJson.sales;
           meta = { ordersScanned: salesJson.ordersScanned, partial: salesJson.partial };
 
           const returnsRes = await fetch("/api/returns", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ productIds, startDate, endDate }),
+            body: JSON.stringify({ skus: allSkus, startDate, endDate }),
           });
           const returnsJson = await returnsRes.json();
-          if (returnsRes.ok) returns = returnsJson.returns;
+          if (returnsRes.ok) returnsBySku = returnsJson.returns;
 
           const handles = [];
           for (const p of pairs) {
@@ -339,16 +394,22 @@
           sessionsResult = await sessionsRes.json();
         }
 
-        // Totals
+        // Aggregate per-product totals from per-SKU data, and running totals
         let vUnits = 0, vRev = 0, mUnits = 0, mRev = 0;
+        const productAggs = {}; // productId -> agg
+
         for (const p of pairs) {
           if (p.vendor) {
-            vUnits += (sales[p.vendor.id] && sales[p.vendor.id].units) || 0;
-            vRev += (sales[p.vendor.id] && sales[p.vendor.id].revenue) || 0;
+            const agg = aggregateProduct(p.vendor, salesBySku, returnsBySku);
+            productAggs[p.vendor.id] = agg;
+            vUnits += agg.units;
+            vRev += agg.revenue;
           }
           if (p.manufacturing) {
-            mUnits += (sales[p.manufacturing.id] && sales[p.manufacturing.id].units) || 0;
-            mRev += (sales[p.manufacturing.id] && sales[p.manufacturing.id].revenue) || 0;
+            const agg = aggregateProduct(p.manufacturing, salesBySku, returnsBySku);
+            productAggs[p.manufacturing.id] = agg;
+            mUnits += agg.units;
+            mRev += agg.revenue;
           }
         }
 
@@ -359,7 +420,7 @@
           '<div class="summaryCard"><div class="label">Manufacturing revenue</div><div class="value">' + money(mRev) + '</div></div>';
 
         if (meta && meta.ordersScanned != null) {
-          subhead.innerHTML = 'Vendor vs. manufacturing sales by style, paired on shared <code>style:</code> tags. &middot; ' +
+          subhead.innerHTML = 'Vendor vs. manufacturing sales by style, paired on shared <code>style:</code> tags, matched by SKU. &middot; ' +
             meta.ordersScanned + ' orders scanned' + (meta.partial ? ' (partial — narrow the date range)' : '');
         }
 
@@ -376,6 +437,9 @@
         } else {
           pairsContainer.innerHTML = pairs.map(function (p) {
             const readyFlag = isReadyToCombine(p);
+            const vendorAgg = p.vendor ? productAggs[p.vendor.id] : null;
+            const mfgAgg = p.manufacturing ? productAggs[p.manufacturing.id] : null;
+
             return (
               '<div class="pairCard">' +
                 '<div class="pairHead">' +
@@ -386,10 +450,10 @@
                   '<span class="styleKey">style:' + escapeHtml(p.styleKey) + '</span>' +
                 '</div>' +
                 '<div class="pairBody">' +
-                  renderSide("Vendor", p.vendor, p.vendor && sales[p.vendor.id], sessionsResult, returns) +
-                  renderSide("Manufacturing", p.manufacturing, p.manufacturing && sales[p.manufacturing.id], sessionsResult, returns) +
+                  renderSide("Vendor", p.vendor, vendorAgg, sessionsResult, salesBySku, returnsBySku) +
+                  renderSide("Manufacturing", p.manufacturing, mfgAgg, sessionsResult, salesBySku, returnsBySku) +
                 '</div>' +
-                (readyFlag ? renderCombineSuggestion(p, sales, returns) : '') +
+                (readyFlag ? renderCombineSuggestion(p, vendorAgg, mfgAgg) : '') +
               '</div>'
             );
           }).join("");
