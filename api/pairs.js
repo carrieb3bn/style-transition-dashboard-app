@@ -31,6 +31,16 @@ const PRODUCTS_QUERY = `
           totalInventory
           createdAt
           tags
+          variants(first: 100) {
+            edges {
+              node {
+                id
+                sku
+                title
+                inventoryQuantity
+              }
+            }
+          }
           media(first: 1) {
             edges {
               node {
@@ -112,6 +122,14 @@ module.exports = async function handler(req, res) {
       const firstMediaEdge = product.media.edges[0];
       const image = firstMediaEdge && firstMediaEdge.node.image ? firstMediaEdge.node.image.url : null;
 
+      const variants = product.variants.edges
+        .map((e) => ({
+          sku: e.node.sku || null,
+          size: e.node.title, // variant title - usually the size (or "Default Title")
+          inventory: e.node.inventoryQuantity,
+        }))
+        .filter((v) => v.sku); // skip variants with no SKU set - can't be matched to sales
+
       const entry = {
         id: product.id,
         numericId: numericIdFromGid(product.id),
@@ -123,6 +141,7 @@ module.exports = async function handler(req, res) {
         image,
         url: `${storeUrl}/products/${product.handle}`,
         adminUrl: `https://admin.shopify.com/store/${adminHandle}/products/${numericIdFromGid(product.id)}`,
+        variants,
       };
 
       if (source === "vendor" && !groups[styleKey].vendor) {
